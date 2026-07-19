@@ -25,7 +25,11 @@ st.markdown("""
 # ==============================================================
 @st.cache_data(ttl=3600)
 def charger_donnees(dossier):
-    volet_a = pd.read_parquet(os.path.join(dossier, "volet_a_score_fraude.parquet"))
+    # Volet A optionnel : le fichier n'est pas encore prêt, on continue sans
+    try:
+        volet_a = pd.read_parquet(os.path.join(dossier, "volet_a_score_fraude.parquet"))
+    except FileNotFoundError:
+        volet_a = None
     volet_b = pd.read_parquet(os.path.join(dossier, "volet_b_seuils_alertes.parquet"))
     volet_b_client = pd.read_parquet(os.path.join(dossier, "volet_b_alertes_par_client.parquet"))
     volet_c = pd.read_parquet(os.path.join(dossier, "volet_c_scoring_client.parquet"))
@@ -48,21 +52,24 @@ try:
 except FileNotFoundError as e:
     st.error(
         f"Fichier introuvable : {e}\n\n"
-        f"Vérifie que le dossier contient bien : volet_a_score_fraude.parquet, "
-        f"volet_b_seuils_alertes.parquet, volet_b_alertes_par_client.parquet, "
-        f"volet_c_scoring_client.parquet."
+        f"Vérifie que le dossier contient au moins : volet_b_seuils_alertes.parquet, "
+        f"volet_b_alertes_par_client.parquet, volet_c_scoring_client.parquet."
     )
     st.stop()
 
 st.sidebar.markdown("---")
-page = st.sidebar.radio(
-    "Navigation",
-    ["Vue d'ensemble", "Volet A — Fraude", "Volet B — Seuils", "Volet C — Clients"],
-)
+options_pages = ["Vue d'ensemble", "Volet B — Seuils", "Volet C — Clients"]
+if df_a is not None:
+    options_pages.insert(1, "Volet A — Fraude")
+else:
+    options_pages.insert(1, "Volet A — Fraude (indisponible)")
+
+page = st.sidebar.radio("Navigation", options_pages)
 
 st.sidebar.markdown("---")
+nb_tx_a = f"{len(df_a):,}" if df_a is not None else "N/A"
 st.sidebar.caption(
-    f"{len(df_c):,} clients · {len(df_a):,} transactions scorées (Volet A) "
+    f"{len(df_c):,} clients · {nb_tx_a} transactions scorées (Volet A) "
     f"· {len(df_b):,} lignes Volet B"
 )
 
@@ -77,15 +84,19 @@ if page == "Vue d'ensemble":
 
     nb_clients = len(df_c)
     nb_critiques = (df_c["SEGMENT_RISQUE"] == "Critique").sum()
-    nb_transactions = len(df_a)
-    nb_suspectes = (df_a["SCORE_FRAUDE_FINAL"] >= 0.5).sum()
+    nb_transactions = len(df_a) if df_a is not None else 0
+    nb_suspectes = (df_a["SCORE_FRAUDE_FINAL"] >= 0.5).sum() if df_a is not None else 0
     nb_depassements = df_b["DEPASSE_SEUIL_DECLARATIF"].sum() if "DEPASSE_SEUIL_DECLARATIF" in df_b.columns else 0
+
+    if df_a is None:
+        st.warning("⚠️ Le Volet A (score de fraude par transaction) n'est pas encore disponible. "
+                   "Les indicateurs ci-dessous sont partiels.")
 
     col1, col2, col3, col4 = st.columns(4)
     for col, valeur, label, couleur in [
         (col1, f"{nb_clients:,}", "Clients analysés", "#1E3A8A"),
         (col2, f"{nb_critiques:,}", "Clients à risque critique", "#DC2626"),
-        (col3, f"{nb_suspectes:,}", "Transactions score ≥ 0.5", "#D97706"),
+        (col3, f"{nb_suspectes:,}" if df_a is not None else "—", "Transactions score ≥ 0.5", "#D97706"),
         (col4, f"{nb_depassements:,}", "Dépassements seuil déclaratif", "#DC2626"),
     ]:
         col.markdown(
@@ -117,8 +128,17 @@ if page == "Vue d'ensemble":
 # ==============================================================
 # PAGE 2 — VOLET A : FRAUDE
 # ==============================================================
-elif page == "Volet A — Fraude":
+elif page in ("Volet A — Fraude", "Volet A — Fraude (indisponible)"):
     st.markdown("<div class='main-header'>🕵️ Volet A — Détection de fraude</div>", unsafe_allow_html=True)
+
+    if df_a is None:
+        st.warning(
+            "⚠️ **Le fichier `volet_a_score_fraude.parquet` n'est pas encore disponible.**\n\n"
+            "Cette page s'activera automatiquement dès que le fichier sera ajouté au dossier "
+            "et que tu cliqueras sur \"🔄 Recharger les données\" dans le menu de gauche."
+        )
+        st.stop()
+
     st.caption("SCORE_REGLES (moteur de règles, 5 signaux) combiné à SCORE_ANOMALIE "
                "(Isolation Forest, non supervisé) → SCORE_FRAUDE_FINAL.")
 
