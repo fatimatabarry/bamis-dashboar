@@ -1,259 +1,240 @@
-%%writefile app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 import os
 
-# --- CONFIGURATION DE LA PAGE ---
-st.set_page_config(
-    page_title="Dashboard Décisionnel - Défi BAMIS",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# ==============================================================
+# CONFIGURATION
+# ==============================================================
+st.set_page_config(page_title="Dashboard BAMIS - Défi ESP 2026", page_icon="🛡️", layout="wide")
 
-# --- STYLE CSS PERSONNALISÉ (Pour des métriques HTML de secours 100% stables) ---
 st.markdown("""
     <style>
-    .main-header { font-size:32px; font-weight:bold; color:#1E3A8A; margin-bottom:20px; }
-    .custom-card { background-color:#F0F4F8; padding:20px; border-radius:8px; border-left:5px solid #1E3A8A; margin-bottom:15px; text-align:center; }
-    .custom-metric { font-size:28px; font-weight:bold; color:#1E3A8A; }
-    .custom-label { font-size:14px; color:#555; }
+    .main-header { font-size:30px; font-weight:bold; color:#1E3A8A; margin-bottom:10px; }
+    .custom-card { background-color:#F0F4F8; padding:18px; border-radius:10px;
+                   border-left:5px solid #1E3A8A; text-align:center; }
+    .custom-metric { font-size:26px; font-weight:bold; color:#1E3A8A; }
+    .custom-label { font-size:13px; color:#555; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- CHARGEMENT DES DONNÉES (CACHE OPTIMISÉ) ---
+
+# ==============================================================
+# CHARGEMENT DES DONNÉES (les vrais fichiers du notebook complet)
+# ==============================================================
 @st.cache_data(ttl=3600)
-def load_data(folder_path):
-    try:
-        df_clients = pd.read_csv(os.path.join(folder_path, "classement_clients.csv"))
-        df_conso = pd.read_csv(os.path.join(folder_path, "consommation_enveloppes.csv"))
-        df_fraude = pd.read_csv(os.path.join(folder_path, "soumission_fraude.csv"))
-        return df_clients, df_conso, df_fraude
-    except Exception as e:
-        st.error(f"Erreur de chargement des fichiers : {e}. Vérifiez le chemin des fichiers du notebook.")
-        return None, None, None
+def charger_donnees(dossier):
+    volet_a = pd.read_parquet(os.path.join(dossier, "volet_a_score_fraude.parquet"))
+    volet_b = pd.read_parquet(os.path.join(dossier, "volet_b_seuils_alertes.parquet"))
+    volet_b_client = pd.read_parquet(os.path.join(dossier, "volet_b_alertes_par_client.parquet"))
+    volet_c = pd.read_parquet(os.path.join(dossier, "volet_c_scoring_client.parquet"))
+    return volet_a, volet_b, volet_b_client, volet_c
 
-# ==========================================
-# 🛠️ SIDEBAR (BARRE LATÉRALE ROBUSTE SANS TEXT_INPUT BRISÉ)
-# ==========================================
-st.sidebar.markdown("### 📊 Moteur Anti-Fraude BAMIS")
+
+st.sidebar.markdown("## 🛡️ Dashboard BAMIS")
 st.sidebar.markdown("---")
 
-st.sidebar.subheader("📂 Configuration des Fichiers")
-default_path = "./" if not os.path.exists("/content/drive/MyDrive/datathon_bamis") else "/content/drive/MyDrive/datathon_bamis"
+dossier_data = st.sidebar.text_input(
+    "Dossier contenant les fichiers .parquet :",
+    value="/content/drive/MyDrive/datathon_bamis",
+)
 
-# Remplacement de st.text_input par st.selectbox pour éviter le crash du script TextInput.js via le tunnel
-dossier_data = st.sidebar.selectbox("Dossier des livrables CSV :", options=[default_path, "./", "/content/"], index=0)
+if st.sidebar.button("🔄 Recharger les données"):
+    st.cache_data.clear()
+
+try:
+    df_a, df_b, df_b_client, df_c = charger_donnees(dossier_data)
+except FileNotFoundError as e:
+    st.error(
+        f"Fichier introuvable : {e}\n\n"
+        f"Vérifie que le dossier contient bien : volet_a_score_fraude.parquet, "
+        f"volet_b_seuils_alertes.parquet, volet_b_alertes_par_client.parquet, "
+        f"volet_c_scoring_client.parquet."
+    )
+    st.stop()
 
 st.sidebar.markdown("---")
-
-st.sidebar.subheader("📋 Menu de Navigation")
 page = st.sidebar.radio(
-    label="Sélectionnez une section :",
-    options=[
-        "Vue d'Ensemble & Risques", 
-        "🔬 Performance & Validation ML",  
-        "Volet A : Analyse de la Fraude", 
-        "Volet B : Gestion des Seuils", 
-        "Volet C : Profils & Traitement"
-    ],
-    index=0
+    "Navigation",
+    ["Vue d'ensemble", "Volet A — Fraude", "Volet B — Seuils", "Volet C — Clients"],
 )
 
 st.sidebar.markdown("---")
-st.sidebar.info(
-    "💡 **Note pour le Jury :**\n"
-    "L'onglet *Performance ML* valide scientifiquement le modèle (Train/Test) avant son déploiement opérationnel dans le *Volet A*."
+st.sidebar.caption(
+    f"{len(df_c):,} clients · {len(df_a):,} transactions scorées (Volet A) "
+    f"· {len(df_b):,} lignes Volet B"
 )
 
-# --- CHARGEMENT EFFECTIF ---
-df_clients, df_conso, df_fraude = load_data(dossier_data)
 
-if df_clients is not None:
-    col_risq = "segment_risque" if "segment_risque" in df_clients.columns else "segment_risq"
-    
-    # ==========================================
-    # PAGE 1 : VUE D'ENSEMBLE & RISQUES
-    # ==========================================
-    if page == "Vue d'Ensemble & Risques":
-        st.markdown("<div class='main-header'>🛡️ BAMIS - Surveillance Globale & Risques</div>", unsafe_allow_html=True)
-        st.write("Ce tableau de bord consolide l'analyse de valeur et de risque issue des moteurs de règles et de machine learning.")
+# ==============================================================
+# PAGE 1 — VUE D'ENSEMBLE
+# ==============================================================
+if page == "Vue d'ensemble":
+    st.markdown("<div class='main-header'>🛡️ BAMIS — Vue d'ensemble</div>", unsafe_allow_html=True)
+    st.caption("Score de fraude = moteur de règles (60%) + Isolation Forest (40%). "
+               "Segmentation risque sur seuils asymétriques (80e/95e/99e percentile).")
 
-        total_c = len(df_clients)
-        nb_critiques = len(df_clients[df_clients[col_risq] == "Critique"])
-        total_tx = len(df_fraude)
-        alertes_b = len(df_conso[df_conso["alerte_declarative"] == "DEPASSEMENT"])
+    nb_clients = len(df_c)
+    nb_critiques = (df_c["SEGMENT_RISQUE"] == "Critique").sum()
+    nb_transactions = len(df_a)
+    nb_suspectes = (df_a["SCORE_FRAUDE_FINAL"] >= 0.5).sum()
+    nb_depassements = df_b["DEPASSE_SEUIL_DECLARATIF"].sum() if "DEPASSE_SEUIL_DECLARATIF" in df_b.columns else 0
 
-        # Utilisation de cartes HTML pures (Zéro dépendance JavaScript Metric.js, affichage instantané garanti)
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.markdown(f"<div class='custom-card'><div class='custom-metric'>{total_c:,}</div><div class='custom-label'>Total Clients</div></div>", unsafe_allow_html=True)
-        with col2:
-            st.markdown(f"<div class='custom-card'><div class='custom-metric' style='color:#DC2626;'>{nb_critiques:,}</div><div class='custom-label'>Comptes Critiques 🚨</div></div>", unsafe_allow_html=True)
-        with col3:
-            st.markdown(f"<div class='custom-card'><div class='custom-metric'>{total_tx:,}</div><div class='custom-label'>Transactions Analysées</div></div>", unsafe_allow_html=True)
-        with col4:
-            st.markdown(f"<div class='custom-card'><div class='custom-metric'>{alertes_b:,}</div><div class='custom-label'>Dépassements Seuils Global</div></div>", unsafe_allow_html=True)
+    col1, col2, col3, col4 = st.columns(4)
+    for col, valeur, label, couleur in [
+        (col1, f"{nb_clients:,}", "Clients analysés", "#1E3A8A"),
+        (col2, f"{nb_critiques:,}", "Clients à risque critique", "#DC2626"),
+        (col3, f"{nb_suspectes:,}", "Transactions score ≥ 0.5", "#D97706"),
+        (col4, f"{nb_depassements:,}", "Dépassements seuil déclaratif", "#DC2626"),
+    ]:
+        col.markdown(
+            f"<div class='custom-card'><div class='custom-metric' style='color:{couleur};'>"
+            f"{valeur}</div><div class='custom-label'>{label}</div></div>",
+            unsafe_allow_html=True,
+        )
 
-        st.markdown("---")
-        st.subheader("📊 Répartition de la Matrice de Traitement (Valeur × Risque)")
-        col_m1, col_m2 = st.columns([2, 1])
-        with col_m1:
-            try:
-                fig_matrice = px.histogram(
-                    df_clients, 
-                    x="segment_valeur", 
-                    color=col_risq,
-                    barmode="group",
-                    title="Nombre de clients par Segment Valeur et Niveau de Risque",
-                    color_discrete_sequence=px.colors.qualitative.Set2
-                )
-                st.plotly_chart(fig_matrice, width='stretch')
-            except:
-                st.dataframe(pd.crosstab(df_clients['segment_valeur'], df_clients[col_risq]), width='stretch')
-        with col_m2:
-            st.write("**Actions recommandées associées :**")
-            act_counts = df_clients["action_recommandee"].value_counts().reset_index()
-            st.dataframe(act_counts, hide_index=True, width='stretch')
+    st.markdown("---")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.subheader("Matrice de décision (Valeur × Risque)")
+        fig = px.histogram(
+            df_c, x="SEGMENT_VALEUR", color="SEGMENT_RISQUE", barmode="group",
+            category_orders={
+                "SEGMENT_VALEUR": ["Bronze", "Argent", "Or", "Platine"],
+                "SEGMENT_RISQUE": ["Faible", "Modéré", "Élevé", "Critique"],
+            },
+            color_discrete_map={"Faible": "#16A34A", "Modéré": "#D97706",
+                                 "Élevé": "#EA580C", "Critique": "#DC2626"},
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    with col_b:
+        st.subheader("Décisions recommandées")
+        st.dataframe(df_c["DECISION"].value_counts().reset_index(),
+                     use_container_width=True, hide_index=True)
 
-    # ==========================================
-    # PAGE 2 : PERFORMANCE & VALIDATION ML
-    # ==========================================
-    elif page == "🔬 Performance & Validation ML":
-        st.markdown("<div class='main-header'>🔬 Entraînement, Test et Validation du Modèle ML</div>", unsafe_allow_html=True)
-        st.write("Validation des algorithmes de détection sur l'échantillon de test avant application globale.")
 
-        col_s1, col_s2, col_s3 = st.columns(3)
-        with col_s1:
-            st.markdown("<div class='custom-card'><div class='custom-metric'>1,280,000</div><div class='custom-label'>Train Set (80%)</div></div>", unsafe_allow_html=True)
-        with col_s2:
-            st.markdown("<div class='custom-card'><div class='custom-metric'>320,000</div><div class='custom-label'>Test Set (20%)</div></div>", unsafe_allow_html=True)
-        with col_s3:
-            st.markdown("<div class='custom-card'><div class='custom-metric'>Binaire</div><div class='custom-label'>Target (Est_Fraude)</div></div>", unsafe_allow_html=True)
+# ==============================================================
+# PAGE 2 — VOLET A : FRAUDE
+# ==============================================================
+elif page == "Volet A — Fraude":
+    st.markdown("<div class='main-header'>🕵️ Volet A — Détection de fraude</div>", unsafe_allow_html=True)
+    st.caption("SCORE_REGLES (moteur de règles, 5 signaux) combiné à SCORE_ANOMALIE "
+               "(Isolation Forest, non supervisé) → SCORE_FRAUDE_FINAL.")
 
-        st.markdown("---")
-        st.subheader("🎯 Indicateurs de Performance (Sur l'échantillon Test)")
-        
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        with col_m1:
-            st.markdown("<div class='custom-card'><div class='custom-metric'>91.4 %</div><div class='custom-label'>Précision (Precision)</div></div>", unsafe_allow_html=True)
-        with col_m2:
-            st.markdown("<div class='custom-card'><div class='custom-metric'>87.2 %</div><div class='custom-label'>Rappel (Recall)</div></div>", unsafe_allow_html=True)
-        with col_m3:
-            st.markdown("<div class='custom-card'><div class='custom-metric'>89.2 %</div><div class='custom-label'>Score F1</div></div>", unsafe_allow_html=True)
-        with col_m4:
-            st.markdown("<div class='custom-card'><div class='custom-metric'>0.945</div><div class='custom-label'>Aire (ROC-AUC)</div></div>", unsafe_allow_html=True)
+    seuil = st.slider("Filtrer par score de fraude minimum :", 0.0, 1.0, 0.5, 0.05)
+    tx_suspectes = df_a[df_a["SCORE_FRAUDE_FINAL"] >= seuil]
+    st.info(f"🔍 **{len(tx_suspectes):,}** transactions au-dessus du score {seuil:.2f} "
+            f"(sur {len(df_a):,}, soit {100*len(tx_suspectes)/len(df_a):.2f}%).")
 
-        st.markdown("---")
-        col_g1, col_g2 = st.columns(2)
-        with col_g1:
-            st.write("**Confusion Matrix (Matrice de Confusion de Test)**")
-            z_matrix = [[315000, 1200], [480, 3320]]
-            try:
-                fig_cm = px.imshow(z_matrix, x=['Prédit Normal', 'Prédit Fraude'], y=['Réel Normal', 'Réel Fraude'], text_auto=True, color_continuous_scale='Blues')
-                st.plotly_chart(fig_cm, width='stretch')
-            except:
-                cm_df = pd.DataFrame(z_matrix, columns=['Prédit Normal', 'Prédit Fraude'], index=['Réel Normal', 'Réel Fraude'])
-                st.table(cm_df)
-        with col_g2:
-            st.write("**Importance des Variables (Feature Importance)**")
-            features = ['Volume_Glissant_1h', 'Montant_Transaction', 'Frequence_Canal', 'Nombre_Comptes_Lies', 'Heure_Suspecte']
-            importance = [0.38, 0.29, 0.15, 0.12, 0.06]
-            try:
-                fig_fi = px.bar(x=importance, y=features, orientation='h', title="Top 5 des indicateurs déterminants du Modèle ML")
-                fig_fi.update_layout(yaxis={'categoryorder':'total ascending'})
-                st.plotly_chart(fig_fi, width='stretch')
-            except:
-                st.dataframe(pd.DataFrame({'Variable': features, 'Importance': importance}), width='stretch')
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        fig = px.histogram(df_a, x="SCORE_FRAUDE_FINAL", nbins=50,
+                            title="Distribution du score final")
+        fig.add_vline(x=seuil, line_dash="dash", line_color="red")
+        st.plotly_chart(fig, use_container_width=True)
+    with col_g2:
+        fig2 = px.scatter(
+            df_a.sample(min(20000, len(df_a)), random_state=42),
+            x="SCORE_REGLES", y="SCORE_ANOMALIE", color="SCORE_FRAUDE_FINAL",
+            title="Règles vs. Isolation Forest (échantillon)",
+            color_continuous_scale="Reds",
+        )
+        st.plotly_chart(fig2, use_container_width=True)
 
-        st.success("✅ Le modèle présente une robustesse validée. Les prédictions opérationnelles sont appliquées dans l'onglet 'Volet A'.")
+    st.subheader("Top 50 des transactions les plus suspectes")
+    st.dataframe(tx_suspectes.nlargest(50, "SCORE_FRAUDE_FINAL"),
+                 use_container_width=True, hide_index=True)
 
-    # ==========================================
-    # PAGE 3 : VOLET A - ANALYSE DE LA FRAUDE
-    # ==========================================
-    elif page == "Volet A : Analyse de la Fraude":
-        st.markdown("<div class='main-header'>🕵️ Volet A - Détection Non-Supervisée & Signaux Graphes</div>", unsafe_allow_html=True)
-        
-        # Remplacement du slider par un selectbox discret (plus robuste en cas de faiblesse réseau du tunnel)
-        score_seuil = st.selectbox("Filtrer par Score de Fraude minimum :", options=[0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95], index=3)
-        tx_suspectes = df_fraude[df_fraude["score_fraude"] >= score_seuil]
-        
-        st.write(f"🔍 **{len(tx_suspectes):,}** transactions détectées au-dessus du score de **{score_seuil}**.")
-        
-        try:
-            fig_scores = px.histogram(df_fraude, x="score_fraude", nbins=50, title="Distribution Globale des Scores de Fraude")
-            fig_scores.add_vline(x=score_seuil, line_dash="dash", line_color="red")
-            st.plotly_chart(fig_scores, width='stretch')
-        except:
-            st.info("Distribution graphique temporairement indisponible.")
-        
-        st.subheader("📌 Top 50 des transactions les plus urgentes à investiguer")
-        st.dataframe(tx_suspectes.nlargest(50, "score_fraude"), width='stretch')
 
-    # ==========================================
-    # PAGE 4 : VOLET B - GESTION DES SEUILS
-    # ==========================================
-    elif page == "Volet B : Gestion des Seuils":
-        st.markdown("<div class='main-header'>💰 Volet B - Consommation des Enveloppes Budgétaires</div>", unsafe_allow_html=True)
-        
-        col_b1, col_b2 = st.columns(2)
-        with col_b1:
-            try:
-                st.plotly_chart(px.pie(df_conso, names="alerte_service", title="Statut des Enveloppes par Service"), width='stretch')
-            except:
-                st.dataframe(df_conso["alerte_service"].value_counts().reset_index(), width='stretch')
-        with col_b2:
-            try:
-                st.plotly_chart(px.pie(df_conso, names="alerte_declarative", title="Statut vis-à-vis du Seuil Déclaratif Global"), width='stretch')
-            except:
-                st.dataframe(df_conso["alerte_declarative"].value_counts().reset_index(), width='stretch')
+# ==============================================================
+# PAGE 3 — VOLET B : SEUILS
+# ==============================================================
+elif page == "Volet B — Seuils":
+    st.markdown("<div class='main-header'>💰 Volet B — Gestion des seuils / budget</div>", unsafe_allow_html=True)
 
-        st.markdown("---")
-        st.subheader("🔄 Signalements de Contournement Potentiels")
-        contourneurs = df_conso[(df_conso["alerte_service"].isin(["OK", "50%"])) & (df_conso["alerte_declarative"].isin(["95% ", "DEPASSEMENT"])) & (df_conso["est_agent_marchand"] == 0)]
-        st.write(f"Il y a **{contourneurs['SOURCE_PHONE'].nunique()}** clients suspectés de ventiler leurs transactions.")
-        st.dataframe(contourneurs.head(100), width='stretch')
+    ordre = ["NORMAL", "VIGILANCE_50", "ALERTE_80", "CRITIQUE_95", "DEPASSEMENT"]
+    couleurs = {"NORMAL": "#16A34A", "VIGILANCE_50": "#84CC16", "ALERTE_80": "#D97706",
+                "CRITIQUE_95": "#EA580C", "DEPASSEMENT": "#DC2626"}
 
-    # ==========================================
-    # PAGE 5 : VOLET C - PROFILS & TRAITEMENT
-    # ==========================================
-    elif page == "Volet C : Profils & Traitement":
-        st.markdown("<div class='main-header'>👤 Volet C - Fiche d'Explicabilité Client Unique</div>", unsafe_allow_html=True)
-        
-        liste_clients = df_clients["SOURCE_PHONE"].unique()
-        client_recherche = st.selectbox("Sélectionner ou chercher le numéro d'un client :", options=liste_clients[:500])
-        
-        info_client = df_clients[df_clients["SOURCE_PHONE"] == client_recherche].iloc[0]
-        
-        c_p1, c_p2 = st.columns(2)
-        with c_p1:
-            st.markdown(f"### Informations Profil")
-            st.markdown(f"**Type de Compte :** `{info_client['type_compte']}`")
-            st.markdown(f"**Segment Valeur :**  `{info_client['segment_valeur']}`")
-            st.markdown(f"**Segment Risque :** `{info_client['segment_risque'] if 'segment_beige' in info_client.index else info_client.get(col_risq)}`")
-            st.markdown(f"**Volume Financier :** {info_client['montant_total']:,} MRU")
-            
-        with c_p2:
-            st.markdown("### 🛠️ Décision Automatique & Explicabilité")
-            action = info_client['action_recommandee']
-            if "Gel" in action or "minimal" in action:
-                st.error(f"🛑 ACTION : {action}")
-            elif "réduit" in action or "Surveillance" in action:
-                st.warning(f"⚠️ ACTION : {action}")
+    st.subheader("Répartition des paliers d'alerte (cumul journalier)")
+    fig = px.pie(df_b, names="PALIER_ALERTE_CUMUL", category_orders={"PALIER_ALERTE_CUMUL": ordre},
+                 color="PALIER_ALERTE_CUMUL", color_discrete_map=couleurs)
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("🔄 Contournement potentiel (répartition entre services)")
+    st.caption("Transactions qui ne dépassent PAS leur seuil unitaire, mais qui dépassent "
+               "le seuil déclaratif global du client.")
+
+    if "DEPASSE_SEUIL_UNITAIRE" in df_b.columns and "DEPASSE_SEUIL_DECLARATIF" in df_b.columns:
+        contournement = df_b[(~df_b["DEPASSE_SEUIL_UNITAIRE"]) & (df_b["DEPASSE_SEUIL_DECLARATIF"])]
+        st.info(f"**{contournement['SOURCE_PHONE'].nunique():,}** clients concernés, "
+                f"**{len(contournement):,}** transactions.")
+        st.dataframe(contournement.head(100), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.subheader("Top clients par ratio de cumul maximal atteint")
+    st.dataframe(
+        df_b_client.nlargest(20, "ratio_cumul_max"),
+        use_container_width=True, hide_index=True,
+    )
+
+
+# ==============================================================
+# PAGE 4 — VOLET C : CLIENTS
+# ==============================================================
+elif page == "Volet C — Clients":
+    st.markdown("<div class='main-header'>👤 Volet C — Classement client</div>", unsafe_allow_html=True)
+
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        filtre_risque = st.selectbox("Filtrer par risque :", ["Tous"] + sorted(df_c["SEGMENT_RISQUE"].dropna().unique().tolist()))
+    with col_f2:
+        filtre_decision = st.selectbox("Filtrer par décision :", ["Toutes"] + sorted(df_c["DECISION"].dropna().unique().tolist()))
+
+    df_filtre = df_c.copy()
+    if filtre_risque != "Tous":
+        df_filtre = df_filtre[df_filtre["SEGMENT_RISQUE"] == filtre_risque]
+    if filtre_decision != "Toutes":
+        df_filtre = df_filtre[df_filtre["DECISION"] == filtre_decision]
+
+    colonnes_affichees = [c for c in [
+        "SOURCE_PHONE", "SEGMENT_VALEUR", "SEGMENT_RISQUE", "DECISION",
+        "MONTANT_TOTAL", "SCORE_VALEUR", "SCORE_RISQUE",
+    ] if c in df_filtre.columns]
+    st.dataframe(df_filtre[colonnes_affichees], use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.subheader("🔍 Fiche client individuelle")
+    client_choisi = st.selectbox("Rechercher un numéro de téléphone :", df_filtre["SOURCE_PHONE"].unique())
+
+    if client_choisi:
+        info = df_c[df_c["SOURCE_PHONE"] == client_choisi].iloc[0]
+
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            st.markdown("#### Profil")
+            st.markdown(f"**Segment valeur :** `{info['SEGMENT_VALEUR']}`")
+            st.markdown(f"**Segment risque :** `{info['SEGMENT_RISQUE']}`")
+            if "MONTANT_TOTAL" in info.index:
+                st.markdown(f"**Montant total :** {info['MONTANT_TOTAL']:,.0f} MRU")
+        with col_p2:
+            st.markdown("#### Décision & explication")
+            decision = info["DECISION"]
+            if decision in ("INVESTIGATION", "SURVEILLANCE PRIORITAIRE"):
+                st.error(f"🛑 {decision}")
+            elif decision == "VIGILANCE RENFORCÉE":
+                st.warning(f"⚠️ {decision}")
             else:
-                st.success(f"✅ ACTION : {action}")
-                
-            st.info(f"**Explicabilité :** \n\n {info_client['explication']}")
-            
+                st.success(f"✅ {decision}")
+            if "TOP_FACTEURS_RISQUE" in info.index:
+                st.info(f"**Facteurs de risque principaux :**\n\n{info['TOP_FACTEURS_RISQUE']}")
+
         st.markdown("---")
-        st.subheader("📈 Historique de consommation récent")
-        conso_client = df_conso[df_conso["SOURCE_PHONE"] == client_recherche]
-        if not conso_client.empty:
-            st.dataframe(conso_client.sort_values(by="jour", ascending=False), width='stretch')
+        st.subheader("Historique Volet B (seuils)")
+        historique = df_b[df_b["SOURCE_PHONE"] == client_choisi].sort_values("TRANSACTION_DATE", ascending=False)
+        if not historique.empty:
+            st.dataframe(historique.head(50), use_container_width=True, hide_index=True)
         else:
-            st.write("Aucune donnée disponible dans le Volet B pour ce numéro.")
-else:
-    st.info("💡 En attente du chargement correct des fichiers `.csv` pour générer le tableau de bord.")
+            st.caption("Aucune transaction trouvée pour ce client dans le Volet B.")
