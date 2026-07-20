@@ -94,6 +94,10 @@ def charger_donnees():
         df_a["SCORE_ANOMALIE"] = df_a["SCORE_ANOMALIE"].astype("float32")
         df_a["SCORE_FRAUDE_FINAL"] = df_a["SCORE_FRAUDE_FINAL"].astype("float32")
         df_a["SERVICE_CODE"] = df_a["SERVICE_CODE"].astype("category")
+        # SOURCE_PHONE : ~40k valeurs uniques répétées sur 1,6M lignes -> category
+        # divise la mémoire par 10-15 par rapport à du texte brut
+        df_a["SOURCE_PHONE"] = df_a["SOURCE_PHONE"].astype("category")
+        df_a["TRANSACTION_CODE"] = df_a["TRANSACTION_CODE"].astype("int32")
     else:
         df_a = None
 
@@ -106,6 +110,8 @@ def charger_donnees():
     df_b["PALIER_ALERTE_CUMUL"] = df_b["PALIER_ALERTE_CUMUL"].astype("category")
     df_b["RATIO_CUMUL_JOURNALIER"] = df_b["RATIO_CUMUL_JOURNALIER"].astype("float32")
     df_b["TRANSACTION_AMOUNT"] = df_b["TRANSACTION_AMOUNT"].astype("float32")
+    df_b["SOURCE_PHONE"] = df_b["SOURCE_PHONE"].astype("category")
+    df_b["TRANSACTION_CODE"] = df_b["TRANSACTION_CODE"].astype("int32")
 
     df_b_client = pd.read_parquet(fichiers["volet_b_client"])
     df_c = pd.read_parquet(fichiers["volet_c"])
@@ -180,11 +186,11 @@ if page == "Vue d'ensemble":
             color_discrete_map={"Faible": "#16A34A", "Modéré": "#D97706",
                                  "Élevé": "#EA580C", "Critique": "#DC2626"},
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     with col_b:
         st.subheader("Décisions recommandées")
         st.dataframe(df_c["DECISION"].value_counts().reset_index(),
-                     use_container_width=True, hide_index=True)
+                     width='stretch', hide_index=True)
 
 
 # ==============================================================
@@ -210,7 +216,7 @@ elif page in ("Volet A — Fraude", "Volet A — Fraude (indisponible)"):
         fig = px.histogram(df_a, x="SCORE_FRAUDE_FINAL", nbins=50,
                             title="Distribution du score final")
         fig.add_vline(x=seuil, line_dash="dash", line_color="red")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     with col_g2:
         fig2 = px.scatter(
             df_a.sample(min(20000, len(df_a)), random_state=42),
@@ -218,11 +224,11 @@ elif page in ("Volet A — Fraude", "Volet A — Fraude (indisponible)"):
             title="Règles vs. Isolation Forest (échantillon)",
             color_continuous_scale="Reds",
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
     st.subheader("Top 50 des transactions les plus suspectes")
     st.dataframe(tx_suspectes.nlargest(50, "SCORE_FRAUDE_FINAL"),
-                 use_container_width=True, hide_index=True)
+                 width='stretch', hide_index=True)
 
 
 # ==============================================================
@@ -238,7 +244,7 @@ elif page == "Volet B — Seuils":
     st.subheader("Répartition des paliers d'alerte (cumul journalier)")
     fig = px.pie(df_b, names="PALIER_ALERTE_CUMUL", category_orders={"PALIER_ALERTE_CUMUL": ordre},
                  color="PALIER_ALERTE_CUMUL", color_discrete_map=couleurs)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     st.markdown("---")
     st.subheader("🔄 Contournement potentiel (répartition entre services)")
@@ -249,11 +255,11 @@ elif page == "Volet B — Seuils":
         contournement = df_b[(~df_b["DEPASSE_SEUIL_UNITAIRE"]) & (df_b["DEPASSE_SEUIL_DECLARATIF"])]
         st.info(f"**{contournement['SOURCE_PHONE'].nunique():,}** clients concernés, "
                 f"**{len(contournement):,}** transactions.")
-        st.dataframe(contournement.head(100), use_container_width=True, hide_index=True)
+        st.dataframe(contournement.head(100), width='stretch', hide_index=True)
 
     st.markdown("---")
     st.subheader("Top clients par ratio de cumul maximal atteint")
-    st.dataframe(df_b_client.nlargest(20, "ratio_cumul_max"), use_container_width=True, hide_index=True)
+    st.dataframe(df_b_client.nlargest(20, "ratio_cumul_max"), width='stretch', hide_index=True)
 
 
 # ==============================================================
@@ -278,7 +284,7 @@ elif page == "Volet C — Clients":
         "SOURCE_PHONE", "SEGMENT_VALEUR", "SEGMENT_RISQUE", "DECISION",
         "MONTANT_TOTAL", "SCORE_VALEUR", "SCORE_RISQUE",
     ] if c in df_filtre.columns]
-    st.dataframe(df_filtre[colonnes_affichees], use_container_width=True, hide_index=True)
+    st.dataframe(df_filtre[colonnes_affichees], width='stretch', hide_index=True)
 
     st.markdown("---")
     st.subheader("🔍 Fiche client individuelle")
@@ -310,6 +316,6 @@ elif page == "Volet C — Clients":
         st.subheader("Historique Volet B (seuils)")
         historique = df_b[df_b["SOURCE_PHONE"] == client_choisi].sort_values("TRANSACTION_DATE", ascending=False)
         if not historique.empty:
-            st.dataframe(historique.head(50), use_container_width=True, hide_index=True)
+            st.dataframe(historique.head(50), width='stretch', hide_index=True)
         else:
             st.caption("Aucune transaction trouvée pour ce client dans le Volet B.")
