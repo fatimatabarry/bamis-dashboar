@@ -47,6 +47,8 @@ SIGNATURES = {
 
 @st.cache_resource(show_spinner="Téléchargement des données depuis Google Drive...")
 def telecharger_et_identifier():
+    import pyarrow.parquet as pq
+
     os.makedirs("data", exist_ok=True)
     fichiers = {}
 
@@ -56,7 +58,9 @@ def telecharger_et_identifier():
             gdown.download(id=file_id, output=chemin_temp, quiet=True)
 
         try:
-            colonnes = set(pd.read_parquet(chemin_temp).columns)
+            # lit uniquement le schéma (noms de colonnes), pas les données
+            # -> évite de charger tout le fichier en mémoire juste pour l'identifier
+            colonnes = set(pq.ParquetFile(chemin_temp).schema.names)
         except Exception:
             continue
 
@@ -70,6 +74,8 @@ def telecharger_et_identifier():
 
 @st.cache_data(ttl=3600)
 def charger_donnees():
+    import gc
+
     fichiers = telecharger_et_identifier()
 
     manquants = [r for r in ["volet_b", "volet_b_client", "volet_c"] if r not in fichiers]
@@ -79,10 +85,32 @@ def charger_donnees():
                  f"disposant du lien\".")
         st.stop()
 
-    df_a = pd.read_parquet(fichiers["volet_a"]) if "volet_a" in fichiers else None
-    df_b = pd.read_parquet(fichiers["volet_b"])
+    # --- Volet A : on ne garde que les colonnes utilisées par le dashboard ---
+    COLS_A = ["TRANSACTION_CODE", "SOURCE_PHONE", "SERVICE_CODE",
+              "TRANSACTION_AMOUNT", "SCORE_REGLES", "SCORE_ANOMALIE", "SCORE_FRAUDE_FINAL"]
+    if "volet_a" in fichiers:
+        df_a = pd.read_parquet(fichiers["volet_a"], columns=COLS_A)
+        df_a["SCORE_REGLES"] = df_a["SCORE_REGLES"].astype("float32")
+        df_a["SCORE_ANOMALIE"] = df_a["SCORE_ANOMALIE"].astype("float32")
+        df_a["SCORE_FRAUDE_FINAL"] = df_a["SCORE_FRAUDE_FINAL"].astype("float32")
+        df_a["SERVICE_CODE"] = df_a["SERVICE_CODE"].astype("category")
+    else:
+        df_a = None
+
+    # --- Volet B (niveau transaction) : idem, colonnes utiles + types compacts ---
+    COLS_B = ["TRANSACTION_CODE", "TRANSACTION_DATE", "SOURCE_PHONE", "SERVICE_CODE",
+              "TRANSACTION_AMOUNT", "DEPASSE_SEUIL_UNITAIRE", "DEPASSE_SEUIL_DECLARATIF",
+              "RATIO_CUMUL_JOURNALIER", "PALIER_ALERTE_CUMUL"]
+    df_b = pd.read_parquet(fichiers["volet_b"], columns=COLS_B)
+    df_b["SERVICE_CODE"] = df_b["SERVICE_CODE"].astype("category")
+    df_b["PALIER_ALERTE_CUMUL"] = df_b["PALIER_ALERTE_CUMUL"].astype("category")
+    df_b["RATIO_CUMUL_JOURNALIER"] = df_b["RATIO_CUMUL_JOURNALIER"].astype("float32")
+    df_b["TRANSACTION_AMOUNT"] = df_b["TRANSACTION_AMOUNT"].astype("float32")
+
     df_b_client = pd.read_parquet(fichiers["volet_b_client"])
     df_c = pd.read_parquet(fichiers["volet_c"])
+
+    gc.collect()
     return df_a, df_b, df_b_client, df_c
 
 
