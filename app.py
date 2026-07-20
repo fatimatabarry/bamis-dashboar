@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import os
+import gdown
 
 # ==============================================================
 # CONFIGURATION
@@ -21,48 +22,83 @@ st.markdown("""
 
 
 # ==============================================================
-# CHARGEMENT DES DONNÉES (les vrais fichiers du notebook complet)
+# TÉLÉCHARGEMENT DEPUIS GOOGLE DRIVE + DÉTECTION AUTOMATIQUE
 # ==============================================================
+# Les 4 fichiers sont identifiés par leur ID Google Drive (partie de
+# l'URL entre /d/ et /view). On les télécharge, puis on regarde les
+# colonnes de chacun pour savoir automatiquement lequel est lequel --
+# pas besoin de se souvenir de l'ordre exact.
+FILE_IDS = [
+    "1NSP0e1jyEmCh2eGBvvHLdcCQjY3eC0D9",
+    "1B9H4EETJrLGT4HZy7WFFKDIH1aPWSWhP",
+    "18JZYnresa9sgGhyUfVpQ9AmkGCWxCb9O",
+    "1ntoFT-yJWMUeHyv8tv-6r_H6zI0ySD3A",
+]
+
+# Signature = un ensemble de colonnes qui n'existe QUE dans ce fichier,
+# pour l'identifier sans ambiguïté après téléchargement.
+SIGNATURES = {
+    "volet_a": {"SCORE_FRAUDE_FINAL", "SCORE_REGLES", "SCORE_ANOMALIE"},
+    "volet_b": {"PALIER_ALERTE_CUMUL", "DEPASSE_SEUIL_DECLARATIF"},
+    "volet_b_client": {"ratio_cumul_max", "nb_depassements_cumul"},
+    "volet_c": {"SEGMENT_RISQUE", "DECISION"},
+}
+
+
+@st.cache_resource(show_spinner="Téléchargement des données depuis Google Drive...")
+def telecharger_et_identifier():
+    os.makedirs("data", exist_ok=True)
+    fichiers = {}
+
+    for i, file_id in enumerate(FILE_IDS):
+        chemin_temp = f"data/fichier_{i}.parquet"
+        if not os.path.exists(chemin_temp):
+            gdown.download(id=file_id, output=chemin_temp, quiet=True)
+
+        try:
+            colonnes = set(pd.read_parquet(chemin_temp).columns)
+        except Exception:
+            continue
+
+        for role, signature in SIGNATURES.items():
+            if signature.issubset(colonnes):
+                fichiers[role] = chemin_temp
+                break
+
+    return fichiers
+
+
 @st.cache_data(ttl=3600)
-def charger_donnees(dossier):
-    # Volet A optionnel : le fichier n'est pas encore prêt, on continue sans
-    try:
-        volet_a = pd.read_parquet(os.path.join(dossier, "volet_a_score_fraude.parquet"))
-    except FileNotFoundError:
-        volet_a = None
-    volet_b = pd.read_parquet(os.path.join(dossier, "volet_b_seuils_alertes.parquet"))
-    volet_b_client = pd.read_parquet(os.path.join(dossier, "volet_b_alertes_par_client.parquet"))
-    volet_c = pd.read_parquet(os.path.join(dossier, "volet_c_scoring_client.parquet"))
-    return volet_a, volet_b, volet_b_client, volet_c
+def charger_donnees():
+    fichiers = telecharger_et_identifier()
+
+    manquants = [r for r in ["volet_b", "volet_b_client", "volet_c"] if r not in fichiers]
+    if manquants:
+        st.error(f"Fichiers introuvables ou non reconnus : {manquants}. "
+                 f"Vérifie que les 4 liens Drive sont bien partagés en \"Tous les utilisateurs "
+                 f"disposant du lien\".")
+        st.stop()
+
+    df_a = pd.read_parquet(fichiers["volet_a"]) if "volet_a" in fichiers else None
+    df_b = pd.read_parquet(fichiers["volet_b"])
+    df_b_client = pd.read_parquet(fichiers["volet_b_client"])
+    df_c = pd.read_parquet(fichiers["volet_c"])
+    return df_a, df_b, df_b_client, df_c
 
 
 st.sidebar.markdown("## 🛡️ Dashboard BAMIS")
 st.sidebar.markdown("---")
 
-dossier_data = st.sidebar.text_input(
-    "Dossier contenant les fichiers .parquet :",
-    value="/content/drive/MyDrive/datathon_bamis",
-)
-
 if st.sidebar.button("🔄 Recharger les données"):
     st.cache_data.clear()
+    st.cache_resource.clear()
 
-try:
-    df_a, df_b, df_b_client, df_c = charger_donnees(dossier_data)
-except FileNotFoundError as e:
-    st.error(
-        f"Fichier introuvable : {e}\n\n"
-        f"Vérifie que le dossier contient au moins : volet_b_seuils_alertes.parquet, "
-        f"volet_b_alertes_par_client.parquet, volet_c_scoring_client.parquet."
-    )
-    st.stop()
+df_a, df_b, df_b_client, df_c = charger_donnees()
 
 st.sidebar.markdown("---")
-options_pages = ["Vue d'ensemble", "Volet B — Seuils", "Volet C — Clients"]
-if df_a is not None:
-    options_pages.insert(1, "Volet A — Fraude")
-else:
-    options_pages.insert(1, "Volet A — Fraude (indisponible)")
+options_pages = ["Vue d'ensemble", "Volet A — Fraude", "Volet B — Seuils", "Volet C — Clients"]
+if df_a is None:
+    options_pages[1] = "Volet A — Fraude (indisponible)"
 
 page = st.sidebar.radio("Navigation", options_pages)
 
@@ -84,19 +120,17 @@ if page == "Vue d'ensemble":
 
     nb_clients = len(df_c)
     nb_critiques = (df_c["SEGMENT_RISQUE"] == "Critique").sum()
-    nb_transactions = len(df_a) if df_a is not None else 0
-    nb_suspectes = (df_a["SCORE_FRAUDE_FINAL"] >= 0.5).sum() if df_a is not None else 0
+    nb_suspectes = (df_a["SCORE_FRAUDE_FINAL"] >= 0.5).sum() if df_a is not None else None
     nb_depassements = df_b["DEPASSE_SEUIL_DECLARATIF"].sum() if "DEPASSE_SEUIL_DECLARATIF" in df_b.columns else 0
 
     if df_a is None:
-        st.warning("⚠️ Le Volet A (score de fraude par transaction) n'est pas encore disponible. "
-                   "Les indicateurs ci-dessous sont partiels.")
+        st.warning("⚠️ Le Volet A n'est pas encore chargé. Les indicateurs ci-dessous sont partiels.")
 
     col1, col2, col3, col4 = st.columns(4)
     for col, valeur, label, couleur in [
         (col1, f"{nb_clients:,}", "Clients analysés", "#1E3A8A"),
         (col2, f"{nb_critiques:,}", "Clients à risque critique", "#DC2626"),
-        (col3, f"{nb_suspectes:,}" if df_a is not None else "—", "Transactions score ≥ 0.5", "#D97706"),
+        (col3, f"{nb_suspectes:,}" if nb_suspectes is not None else "—", "Transactions score ≥ 0.5", "#D97706"),
         (col4, f"{nb_depassements:,}", "Dépassements seuil déclaratif", "#DC2626"),
     ]:
         col.markdown(
@@ -132,11 +166,7 @@ elif page in ("Volet A — Fraude", "Volet A — Fraude (indisponible)"):
     st.markdown("<div class='main-header'>🕵️ Volet A — Détection de fraude</div>", unsafe_allow_html=True)
 
     if df_a is None:
-        st.warning(
-            "⚠️ **Le fichier `volet_a_score_fraude.parquet` n'est pas encore disponible.**\n\n"
-            "Cette page s'activera automatiquement dès que le fichier sera ajouté au dossier "
-            "et que tu cliqueras sur \"🔄 Recharger les données\" dans le menu de gauche."
-        )
+        st.warning("⚠️ Le fichier Volet A n'a pas été détecté parmi les liens fournis.")
         st.stop()
 
     st.caption("SCORE_REGLES (moteur de règles, 5 signaux) combiné à SCORE_ANOMALIE "
@@ -195,10 +225,7 @@ elif page == "Volet B — Seuils":
 
     st.markdown("---")
     st.subheader("Top clients par ratio de cumul maximal atteint")
-    st.dataframe(
-        df_b_client.nlargest(20, "ratio_cumul_max"),
-        use_container_width=True, hide_index=True,
-    )
+    st.dataframe(df_b_client.nlargest(20, "ratio_cumul_max"), use_container_width=True, hide_index=True)
 
 
 # ==============================================================
